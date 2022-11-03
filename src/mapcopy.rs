@@ -1,24 +1,29 @@
+
 extern crate simplelog;
 extern crate xml; 
 extern crate minidom;
 extern crate regex;
-use simplelog::*;
-//use std::fs::{self,File,DirEntry};
+
+//But I AM using these...but not directly. 
+//use std::fs::DirEntry; 
+//use std::fs::File;
 use std::time::SystemTime;
 use std::time::Duration;
-use log::debug;
-use log::error;
 use std::fs;
-//use std::path::{Path,PathBuf};
 use std::path::Path;
 use std::process::Command;
 use std::collections::HashMap;
-use std::io; //::{stdin,Result};
+use std::io; 
+use log::debug;
+use log::error;
+use simplelog::*;
 use minidom::Element;
 use regex::*;
+
+
 //#####################################################
 //# part 1. 
-//#   - should of cp-ed the base and specific base_variant dir into the swap dir
+//#   - should of copied ('cp -some-arguments') to the base and specific base_variant dir into the swap dir
 //#   - re-created the failsafe default http website pages 
 //#   - NO chown should be done yet as Vagrant ( or Docker ) does not have permission to chown the 'troy' user owned files 
 //#
@@ -26,7 +31,7 @@ use regex::*;
 //#   - chown the swap/temp dir to correct ACLs etc 
 //#   - use the XML spec file for lookup 
 //#
-//#to be run on PROD/AWS EC2 or Vagrant only
+//# NOTE: to be run on PROD/AWS EC2 or VirtualBox or Vagrant only
 //
 //#perform rsync or similar on all the required dirs/files into the target (normally LIVE/PROD) server!!!
 //#####################################################
@@ -73,6 +78,14 @@ pub struct FileData {
 
 fn show_help(){
     println!("You are running the MapCopy / project_tree Rust script"); 
+    println!(" - 'Part One' Shell script is assumed to be called before this call."); 
+    println!(r" - This code cycles through the XML Tree Specification files and creates a 
+        HashMap for all the dirs/files they reference -with their user/group/mode and then 
+        the 'sectioned-off' dir area for the corresponding files that will get copied (rsynced) 
+        over to the (live) Server and update their file mode/user/group info.
+        It MAY or MAY-NOT delete extra files not tracked by the XML Spec. 
+        Also the un-tracked files in the managed dirs may have their file modes changed etc."); 
+    println!(); 
     println!(r"
             -h | --help : show help 
             -v | --version : show version
@@ -83,8 +96,7 @@ fn show_help(){
 }
 
 fn show_version() -> String {
-    let result = format!( "Version: {}",  env!( "CARGO_PKG_VERSION" ) );
-    result
+    env!( "CARGO_PKG_VERSION" ).to_string() 
 }
 
 fn set_logger_level(level: &str) {
@@ -107,7 +119,12 @@ fn set_logger_level(level: &str) {
 
 }
 
-pub fn run<'a>(args: &'a Vec<String> ) -> i32 {//{{{
+
+fn line(){
+    println!("-----------------------------------------------------------------------------"); 
+}
+
+pub fn run<'a>(args: &'a Vec<String> ) -> Result<bool, String> {//{{{
 
     let mut g = RunParams{
         dry_run: false, 
@@ -134,28 +151,43 @@ pub fn run<'a>(args: &'a Vec<String> ) -> i32 {//{{{
         let flag = &args[i]; 
         let val = if i+1 <= args.len() -1 { &args[i+1] } else { "" }; 
         match flag.as_str() {
-            "-h" | "--help" => { show_help();return -1 } , 
-            "-v" | "--version" => { show_version(); return -2 },
+            "-h" | "--help" => { show_help(); return Ok(false) } , 
+            "-v" | "--version" => { println!("Version: {}" , show_version()); return Ok(false) },
             "-f" | "--force-yes" =>  g.force_yes = true, 
             "-d" | "--dry-run" => g.dry_run = true, 
             "-m" | "--mode" => g.mode = val, 
             "-l" | "--loglevel" => set_logger_level(&val), 
-            _ =>  if i == 0 && args.len() == 1 {show_help(); return -3} 
+            _ =>  if i == 0 && args.len() == 1 { show_help(); return Ok(false) } 
         }
-        i = i+1;
+        i = i+1; 
+        //return //WHY here typeo?
     };
 
     if g.mode == "" {
-        error!("ERROR: No 'mode' set!");
+        let err = format!("ERROR: No 'mode' set!");
+        error!("{}", err); 
         show_help();
-        return -4;
+        return Err(err); 
     }
 
     // The first argument is the path that was used to call the program.
-    println!("-------------------------------------------------------------");
-    println!("----------------project_tree (Rust)--------------------------"); 
-    println!("-------------------------------------------------------------");
-    println!("{}", show_version() ); 
+    line();
+    line();
+println!(r"
+     ccee88oo
+  C8O8O8Q8PoOb o8oo
+ dOB69QO8PdUOpugoO9bD
+CgggbU8OU qOp qOdoUOdcb
+    6OuU  /p u gcoUodpP
+      \\\//  /douUP
+        \\\////  
+         |||/\
+         |||\/
+         ||)
+   .....//||||\.... project_tree v{} (written in Rust). 
+", show_version()
+);
+    println!(); 
     debug!("run: working path: '{}' ", &args[0]);
 
     // The rest of the arguments are the passed command line parameters.
@@ -164,7 +196,14 @@ pub fn run<'a>(args: &'a Vec<String> ) -> i32 {//{{{
     debug!("run: arguments: '{:?}'", &args[1..]);
 
 
-    let fields = get_base( &args[0] );
+    let result = get_base(&args[0]); 
+    if result.is_err(){
+        let err = format!("run: get_base call failure: {} ", result.unwrap_err()); 
+        error!("{}", err); 
+        return Err(err);
+    }
+
+    let fields = result.unwrap(); 
     g.swap_dir = match &fields.get("swapdir") { Some(x) => x , _ => ""} ;
     g.target = match &fields.get("target") { Some(x) => x , _ => ""} ;
     g.build_name = match &fields.get("buildname") { Some(x) => x , _ => ""} ;
@@ -179,8 +218,9 @@ pub fn run<'a>(args: &'a Vec<String> ) -> i32 {//{{{
 
     let (platform, ok) = get_platform() ; 
     if !ok {
-        error!("get_platform: ERROR: {} ", platform); 
-        return -999; 
+        let err = format!("get_platform: ERROR: {} ", platform); 
+        error!("{}", err);
+        return Err(err);
     }
     let platform = platform.to_string(); 
     let web_owner = if platform.contains("OpenBSD") {
@@ -194,7 +234,7 @@ pub fn run<'a>(args: &'a Vec<String> ) -> i32 {//{{{
         "http"
     };
 
-    debug!("___________________________________________________"); 
+    line(); 
     debug!("Forcing a 'yes' entry for any user-input?: {}", g.force_yes);
     if g.dry_run {
         println!("Running in DRY-RUN mode for rsync, no changes saved!!!");
@@ -210,7 +250,7 @@ pub fn run<'a>(args: &'a Vec<String> ) -> i32 {//{{{
     debug!("source_dir: {}", g.source_dir); 
     debug!("config_dir: {}", g.config_dir); 
     debug!("web/http area owner: {}", web_owner) ;
-    println!("___________________________________________________"); 
+    line();
 
     if g.target == "" 
         || g.swap_dir == "" 
@@ -222,47 +262,45 @@ pub fn run<'a>(args: &'a Vec<String> ) -> i32 {//{{{
         || g.source_dir == ""
         || g.config_dir == ""
         || web_owner == "" {
-        error!( "ERROR: Some get_base fields are empty. ");
-        return 100; 
+        let err = format!( "ERROR: Some get_base fields are empty. ");
+        error!("{}", err);
+        return Err(err);
     }
 
-    //return 100; 
     clean_backup_dir(&g); 
     setup_logfile_dir(&g); 
 
     //3rd param: boolean: delete extra files in target, 
-    simple_copy(&mut g, "/var/www/html/sites/default" , false, web_owner, web_owner );  
-    simple_copy(&mut g, "/var/www/html/sites/default_http" , false, web_owner, web_owner );  
-    simple_copy(&mut g, "/var/www/html/sites/default_https" , false, web_owner, web_owner );  
-
+    //TODO: all these mapcopy params can be sourced in the text config file
+    //TODO: as website owner is kinda special, treat it as a TAG in the TBA settings file. 
+    let _res = simple_copy(&mut g, "/var/www/html/sites/default" , false, web_owner, web_owner );  
+    let _res = simple_copy(&mut g, "/var/www/html/sites/default_http" , false, web_owner, web_owner );  
+    let _res = simple_copy(&mut g, "/var/www/html/sites/default_https" , false, web_owner, web_owner );  
     
-    map_copy(&mut g, "/etc/httpd/conf" , false );  
-    map_copy(&mut g, "/etc/apache2" , false );  
-    map_copy(&mut g, "/etc/postfix" , false );  
-    map_copy(&mut g, "/etc/postgresql" , false );  
-    map_copy(&mut g, "/etc/php" , false );  
-    map_copy(&mut g, "/etc/php8" , false );  
-    map_copy(&mut g, "/var/lib/postgres" , false );  
-    map_copy(&mut g, "/var/lib/postgresql" , false );  
-    map_copy(&mut g, "/root", false );  
-    map_copy(&mut g, "/home/vagrant", false );  
-    map_copy(&mut g, "/home/arch", false );  
-    map_copy(&mut g, "/home/alpine", false );  
-    map_copy(&mut g, "/etc/logrotate.d" , false );  
+    let _res = map_copy(&mut g, "/etc/httpd/conf" , false );  
+    let _res = map_copy(&mut g, "/etc/apache2" , false );  
+    let _res = map_copy(&mut g, "/etc/postfix" , false );  
+    let _res = map_copy(&mut g, "/etc/postgresql" , false );  
+    let _res = map_copy(&mut g, "/etc/php" , false );  
+    let _res = map_copy(&mut g, "/etc/php8" , false );  
+    let _res = map_copy(&mut g, "/var/lib/postgres" , false );  
+    let _res = map_copy(&mut g, "/var/lib/postgresql" , false );  
+    let _res = map_copy(&mut g, "/root", false );  
+    let _res = map_copy(&mut g, "/home/vagrant", false );  
+    let _res = map_copy(&mut g, "/home/arch", false );  
+    let _res = map_copy(&mut g, "/home/alpine", false );  
+    let _res = map_copy(&mut g, "/etc/logrotate.d" , false );  
 
-    //TODO: all these mapcopy params can be sourced when the text config file
-    simple_copy(&mut g, "/etc/redis.conf" , false, "redis", "redis" );  
-    //TODO: all these mapcopy params can be sourced when the text config file
-    simple_copy(&mut g, "/etc/ssl_self" , false , "root", "root" );  
-    //TODO: all these mapcopy params can be sourced when the text config file
-    simple_copy(&mut g, "/etc/letsencrypt" , false , "root", "root" ); 
+    let _res = simple_copy(&mut g, "/etc/redis.conf" , false, "redis", "redis" );  
+    let _res = simple_copy(&mut g, "/etc/ssl_self" , false , "root", "root" );  
+    let _res = simple_copy(&mut g, "/etc/letsencrypt" , false , "root", "root" ); 
 
-    return 0;
+    return Ok(true); 
 
 }//end fn}}}
 
 fn run_command(command : &str ) -> (bool, String ) {//{{{
-    println!();
+    debug!("");
     debug!("run_command: '{}'" , command); 
     let parts: Vec<&str> =  command.split(' ').collect(); 
     if parts.len() < 1 {
@@ -296,18 +334,16 @@ fn run_command(command : &str ) -> (bool, String ) {//{{{
 
 fn clean_backup_dir( g: &RunParams ) -> bool {//{{{
 //setup and clean out backup dir for next processing...
+    line();
     debug!("clean_backup_dir: backup_dir: '{}'", g.backup_dir); 
     if g.backup_dir == "/" {
         error!("ERROR: backup_dir is root! exiting now.");
+        line();
         return false;
     }
 
-    let dry_run_failsafe = if g.dry_run {
-        debug!("NOTE: running in dry_run mode, adding 'echo' before command call!");
-        "echo " 
-    }else {
-        ""
-    };
+    let dry_run_failsafe = if g.dry_run { debug!("NOTE: running in dry_run mode, adding 'echo' before command call!"); "echo " }
+            else { "" };
 
     let cmd = format!("{}rm -rf {}", dry_run_failsafe, g.backup_dir );
     let (result , raw_output) = run_command(&cmd);
@@ -317,6 +353,7 @@ fn clean_backup_dir( g: &RunParams ) -> bool {//{{{
 
     } else {
         debug!("clean_backup_dir: failed to remove dir result: '{}'", raw_output);
+        line();
         return false;
     }
         
@@ -328,13 +365,16 @@ fn clean_backup_dir( g: &RunParams ) -> bool {//{{{
 
     } else {
         debug!("clean_backup_dir: failed to mkdir result: '{}' ", raw_output);
+        line(); 
         return false;
     }
 
+    line();
     return true
 }//}}}
 
 fn setup_logfile_dir( g: &RunParams ) -> bool {//{{{
+    line();
     debug!("setup_logfile_dir: logfile_dir: {}" , g.logfile_dir) ;
 
     let dry_run_failsafe  = if g.dry_run { "echo " } else { "" };
@@ -345,6 +385,7 @@ fn setup_logfile_dir( g: &RunParams ) -> bool {//{{{
     let (result, raw_output) = run_command(&cmd); 
 
     debug!("setup_logfile_dir: result: '{}' " , raw_output); 
+    line();
     result
 }//}}}
 
@@ -372,21 +413,24 @@ fn get_platform() -> (String, bool) {//{{{
     
 }//}}}
 
-fn get_base<'a>(self_path : &str ) -> HashMap<String, String> {//{{{
+fn get_base<'a>(self_path : &str ) -> Result<HashMap<String, String>,String> {//{{{
 // the bash script must output the var as 
 // foo: value
 // foo: value
 // ...and this code will parse that
 
-//   my %_fields; 
-    let mut fields: HashMap<String,String> = HashMap::new(); 
 
     let cmd = "./base_setup.sh";
     if Path::new(cmd).exists() == false {
-        error!("get_base: ERROR: 'base_setup.sh' files does not exist."); 
-        return fields; 
+        let err = format!("get_base: ERROR: 'base_setup.sh' files does not exist."); 
+        error!("{}", err); 
+        return Err(err)
     }
 
+    let mut fields: HashMap<String,String> = HashMap::new(); 
+
+    //-s param for the shell script to -know- what dir path it is in .
+    //  ...subst the BASH_SOURCE[0] call!
     let cmd = format!("{} -s {} ", cmd, self_path) ; 
     let (ok , raw_output) = run_command(&cmd);
     if ok {
@@ -395,17 +439,31 @@ fn get_base<'a>(self_path : &str ) -> HashMap<String, String> {//{{{
             let caps = re.captures(&line).unwrap();
             let key = String::from ( caps.get(1).map_or("", |m| m.as_str()) ); 
             let value = String::from( caps.get(2).map_or("", |m| m.as_str()) );
-            fields.insert(key, value); 
+            debug!(" KEY, VALUE = '{}' , '{}' " , key, value);
+            let result = fields.insert(key.clone(), value); 
+            if result.is_some() {
+                let err = format!("Strange! the key: {} was already in the hashmap!", &key); 
+                warn!("{}", err); 
+            }
         }
         for (key,val)  in fields.iter() {
-            debug!("field key: '{}' , val: '{}' " , key, val ) ; 
+            debug!("base_setup.sh field key: '{}' , val: '{}' " , key, val ) ; 
+        }
+        if raw_output.lines().count() != fields.len() {
+           let err = format!("Something's wrong: shell script lines : '{}' , hashmap length: '{}'", 
+                             raw_output.lines().count(), 
+                             fields.len() ); 
+           error!("{}", err); 
+           return Err(err); 
         }
     }
     else{
-        error!("get_base: not okay: '{}' ", raw_output); 
+        let err = format!("get_base: not okay: '{}' ", raw_output); 
+        error!("{}", err); 
+        return Err(err); 
     }
 
-    fields 
+    Ok(fields)
 }//}}}
 
 fn scan_tree<'a >( //{{{
@@ -420,6 +478,7 @@ fn scan_tree<'a >( //{{{
 // compare against the filesystem candidate to be uploaded. 
 
     println!();
+    line(); 
     let cur_dir_name = cur_dir.attr("name").unwrap_or_default(); 
 
     debug!("scan_tree: cur_path: '{}'" , &cur_path); 
@@ -493,6 +552,7 @@ fn scan_tree<'a >( //{{{
             if result.is_err() {
                 let err = format!("scan_tree: level: {} (recursive result): '{}'" ,file_level,  result.unwrap_err()); 
                 error!("{}", err); 
+                line(); 
                 return Err(err); 
             }
                 
@@ -520,9 +580,11 @@ fn scan_tree<'a >( //{{{
         } else {
             let err = format!("scan_tre: ERROR Unexpected node name: '{}' ", node.name() );
             error!("{}", err); 
+            line(); 
             return Err(err); 
         }
     }
+    line(); 
     Ok(true)
 }//end fn}}}
 
@@ -534,9 +596,8 @@ fn simple_copy( //{{{
     file_group: &str 
 ) -> Result<bool,String> {
 // simple rsync version just for default-website for e.g , no xml tree etc 
-    let spacer = "----------------------------------------------------------------------------------"; 
     println!();
-    println!("{}", spacer);  
+    line(); 
     debug!("simple_copy: path_dir: '{}'", path_dir); 
     debug!("simple_copy: delete: '{}'", delete); 
     debug!("simple_copy: file_user: '{}'", file_user); 
@@ -549,7 +610,7 @@ fn simple_copy( //{{{
     if Path::new(String::as_str(&source)).exists() == false {
         let err = format!( "simple_copy: ERROR: '{}' does not exist!", source);
         error!("{}", err); 
-        println!("{}", spacer);  
+        line(); 
         return Err(err); 
     }
 
@@ -561,10 +622,10 @@ fn simple_copy( //{{{
         //Caution: Openbsd does not have -v argument for mkdir
         let command = format!("{}mkdir -p {}" , dry_run_failsafe, target) ; 
         let (ok,result) = run_command(&command); 
-        if !ok {
+        if ok == false {
             let err = format!("simple_copy: ERROR: mkdir failed: '{}'", result); 
             error!("{}", err); 
-            println!("{}", spacer);  
+            line(); 
             return Err(err); 
         }
     }
@@ -582,12 +643,10 @@ fn simple_copy( //{{{
         "".to_string()
     };
 
-    let rsync_dryrun = if g.dry_run { "--dry-run " } else { "" }; 
-
-
-    let rsync_backup = format!(" --backup --backup-dir={}{}", g.backup_dir, path_dir );
     let default_duration = Duration::ZERO;
     let seconds_now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or(default_duration).as_secs();
+    let rsync_dryrun = if g.dry_run { "--dry-run " } else { "" }; 
+    let rsync_backup = format!(" --backup --backup-dir={}{}", g.backup_dir, path_dir );
     let rsync_logfile = format!( " --log-file={}/{}_{}.log", g.logfile_dir, logfile_part, seconds_now );
     let rsync_switches = format!("{}-v -a --human-readable{}{}{}{}", 
                                  rsync_dryrun, 
@@ -606,9 +665,10 @@ fn simple_copy( //{{{
     if ok == false {
         let err = format!("simple_copy: rsync result: '{}' " , raw_output); 
         error!("{}", err); 
-        println!("{}", spacer);  
+        line(); 
         return Err(err); 
     }
+    line();
     return Ok(true); 
 
 }//end fn}}}
@@ -618,24 +678,25 @@ fn scan_source( //{{{
     path_dir: &str ) -> Result<bool, String> {
 //create hashtable for the filesystem structure to then do a acl/mode comparision against .
     println!(); 
-    let line = "X".repeat(30);  
-    println!("{}", line);
+    line(); 
     debug!("scan_source: path_dir: '{}'", path_dir) ; 
 
     let result = scan_source_dir(g, path_dir, 0);
     if result.is_err() {
         let err = format!("scan_source: From scan_source_dir call: {}", result.unwrap_err());
         error!("{}", &err); 
+        line();
         return Err(err); 
     }
     let ret = show_prelim(false, g);
     if ret.is_err(){
         let err = format!("scan_source: From show_prelim: {}" , ret.unwrap_err()); 
         debug!("{}", &err); 
+        line(); 
         return Err(err); 
     }
 
-    println!("{}", line); 
+    line();
     return Ok(true);
 } //}}}
 
@@ -693,18 +754,16 @@ fn map_copy( //{{{
 //# recurse into all directory elements to get all file elements etc 
 //# populate the hash tree with the full file path for easy lookup 
 //#pass over to copysourcefiles with delete param for rsync to decide if to rm extra files NOT in source dir.  
-    let line = "-".repeat(30); 
     println!(); 
-    println!( "{}", line);
+    line(); 
     debug!("map_copy: path_dir: '{}'", path_dir); 
     debug!("map_copy: delete: '{}'", delete); 
 
     if !Path::new(path_dir).exists() {
        let err = format!( "map_copy: 'path_dir' parameter not found on filesystem.\n
                           NOT performing map_copy as a precaution.");
-
-        error!( "{}",  err);
-        println!( "{}", line);
+        error!("{}",err);
+        line();
         return Err(err); 
     }
 
@@ -720,7 +779,7 @@ fn map_copy( //{{{
     if !Path::new(&file_name).exists(){
         let err = format!("map_copy: File spec '{}' not found.", file_name); 
         error!("{}", err); 
-        println!( "{}", line);
+        line();
         return Err(err);
     }
 
@@ -729,7 +788,7 @@ fn map_copy( //{{{
     if !res.is_ok(){
         let err = format!("map_copy: ERROR: could not read '{}' into string" , &file_name); 
         error!("{}", err);
-        println!( "{}", line);
+        line();
         return Err(err); 
     }
 
@@ -743,6 +802,7 @@ fn map_copy( //{{{
             if name.is_empty() {
                 let err = format!("map_copy: directory element did NOT have name attribute!"); 
                 error!("{}", err); 
+                line();
                 return Err(err); 
             }
 
@@ -751,12 +811,14 @@ fn map_copy( //{{{
                 let err = result.unwrap_err(); 
                 let err = format!("calling scan_tree: {}", err); 
                 error!("{}",err); 
+                line();
                 return Err(err);
             }
         }
         else{
             let err = format!("map_copy: child of XML tree was NOT a directory: '{}'", child.name()); 
             error!("{}", err); 
+            line();
             return Err(err);
         }
 
@@ -769,7 +831,7 @@ fn map_copy( //{{{
     if result.is_err() {
         let err = format!("map_copy: scan_source error: '{}' ", result.unwrap_err()); 
         error!("{}", err); 
-        println!( "{}", line);
+        line();
         return Err(err); 
     }
 
@@ -777,11 +839,11 @@ fn map_copy( //{{{
     if ret.is_err() {
         let err = format!("map_copy: ERROR from copy_source_files = {} ", ret.unwrap_err() ); 
         error!("{}", err); 
-        println!( "{}", line);
+        line();
         return Err(err); 
     }
 
-    println!( "{}", line);
+    line();
     return Ok(true); 
 } //end fn}}}
 
@@ -794,6 +856,7 @@ fn copy_source_files( //{{{
 //THEN rsync that dir structure across.
 
     println!();
+    line();
     debug!("copy_source_files: path_dir: '{}'", path_dir); 
     debug!("copy_source_files: delete: '{}'", delete); 
 
@@ -812,6 +875,7 @@ fn copy_source_files( //{{{
         if !ok {
             let err = format!("copy_source_files: ERROR: chown failed: '{}'", raw_output); 
             error!("{}", &err); 
+            line();
             return Err(err);
         }
         let cmd_chmod = format!("{}chmod {} {}" , dry_run_failsafe, item.file_mode, source_file); 
@@ -819,6 +883,7 @@ fn copy_source_files( //{{{
         if !ok {
             let err = format!("copy_source_files: ERROR: chmod failed: '{}'", raw_output); 
             error!("{}", &err); 
+            line();
             return Err(err); 
         }
     }
@@ -845,6 +910,7 @@ fn copy_source_files( //{{{
     if !ok {
         let err = format!("copy_source_files: FAILED to run mkdir: '{}'" , raw_output);
         error!("{}",err);
+        line();
         return Err(err); 
     }
 
@@ -870,10 +936,12 @@ fn copy_source_files( //{{{
     if !r_ok {
         let err = format!("copy_source_files: FAILED: rsync: '{}'", r_raw_output); 
         error!("{}", err); 
+        line();
         return Err(err); 
     }
 
     debug!("copy_source_files: rsync result (OK): '{}' " , r_raw_output); 
+    line();
     Ok(true) 
 }//end fn}}}
 
@@ -884,8 +952,7 @@ fn show_prelim(//{{{
     //show to user What will happen re file Mode, Missing etc   
     //iterate the xmltree first then the filesys source tree 
     println!(); 
-    let line = "-----------------------------------------------------------------------------";
-    println!("{}", &line);
+    line();
     debug!("show_prelim: re_show: '{}'", re_show);
     debug!("show_prelim: force_yes: '{}'", g.force_yes);
     println!("===XML Tree spec map===");
@@ -952,6 +1019,7 @@ fn show_prelim(//{{{
                 if new_file_mode == 0 {
                     let result = format!("show_prelim: ERROR : default_file_mode was zero ! ");
                     error!("{}", result) ;
+                    line();
                     return Err(result); 
                 }
                 tmp.file_mode = new_file_mode;
@@ -959,6 +1027,7 @@ fn show_prelim(//{{{
             else {
                 let err = result.unwrap_err(); 
                 let err = format!("show_prelim: ERROR in get_parent_perms: '{}'", err ) ;
+                line();
                 return Err(err); 
             };
         }
@@ -992,7 +1061,8 @@ fn show_prelim(//{{{
         let stdin = io::stdin(); // We get `Stdin` here.
         let res = stdin.read_line(&mut buffer);
         if !res.is_ok() {
-            return Err("bad read_line".to_string()); 
+            line();
+            return Err("bad Stdin read_line".to_string()); 
         }
         buffer = buffer.replace("\n", ""); 
         if &buffer == "y" || &buffer == "Y" {
@@ -1001,23 +1071,23 @@ fn show_prelim(//{{{
                 if ret.is_err(){
                     let str_err = ret.unwrap_err(); 
                     let str_err = format!("show_prelim (recursive return): ERROR: '{}'", &str_err ) ;
-                    error!("{}", &line);
+                    line();
                     return Err(str_err); 
                 }
             }
             println!("Processing...");
         } else if &buffer == "N" || &buffer == "n" || &buffer == "" {
             println!("You have bailed out! Ending now."); 
-            println!("{}", &line);
-            return Err("User terminated function.".to_string()); 
+            line();
+            return Err("User terminated function.".to_string());
         } else {
             println!( "Couldn't understand response. Terminating now : '{}' ", buffer );
-            println!("{}", &line);
+            line();
             return Err("Could not understand response".to_string()); 
         }
     }
 
-    println!("{}", &line);
+    line();
     return Ok(true); 
 
 } //end fn}}}
@@ -1070,8 +1140,7 @@ fn scan_source_dir( //{{{
 //recusive scan into filesystem sourcedir to create hashmap of filesdirs
 //to crossref with xml trees version 
     println!(); 
-    let line = "------------------------------------------------------------------------"; 
-    println!("{}", line); 
+    line();
     debug!("scan_source_dir: cur_dir: '{}'" , cur_dir); 
     debug!("scan_source_dir: level: '{}'" , level); 
     debug!("scan_source_dir: g.source_dir: {}", g.source_dir); 
@@ -1085,6 +1154,7 @@ fn scan_source_dir( //{{{
     if full_dir_mode == 0 {
         let err = format!("scan_source_dir: full_dir '{}' mode was zero!", &full_dir);
         error!("{}", err);
+        line();
         return Err(err);
     }
 
@@ -1115,6 +1185,7 @@ fn scan_source_dir( //{{{
             }else {
                let err = format!("scan_source_dir: could not convert file_name() into String " ); 
                error!("{}", err); 
+               line(); 
                return Err(err); 
             }
 
@@ -1129,6 +1200,7 @@ fn scan_source_dir( //{{{
             if hash_key.is_none(){
                 let err = "hash_key did NOT convert to utf8 string correctly!"; 
                 error!("{}", &err); 
+                line();
                 return Err(err.to_string()); 
             }
             let hash_key : String = hash_key.unwrap().to_string(); 
@@ -1145,9 +1217,11 @@ fn scan_source_dir( //{{{
                     if this_file_mode == 0 {
                         let err = format!("scan_source_dir: file name '{}' mode returned zero.", str_file_name.unwrap( ) ); 
                         error!("{}", err); 
+                        line();
                         return Err(err);
                     }
                 }else{
+                    line(); 
                     return Err("this_full_path NOT a correct utf-8 string.".to_string()); 
                 }
 
@@ -1166,16 +1240,11 @@ fn scan_source_dir( //{{{
 
             } else if this_full_path.is_dir() {
                 debug!("scan_source_dir: this_full_path IS directory."); 
-                //let mut scan_dir_path = PathBuf::new(); 
-                //scan_dir_path.push(cur_dir); 
-                //scan_dir_path.push(this_path); 
-                //let p = scan_dir_path.as_path().to_string_lossy();
-                //let res = scan_source_dir(g , &p , level + 1);
                 let res = scan_source_dir(g , &hash_key , level + 1);
                 if res.is_err(){
                     let err = format!("scan_source_dir: ERROR: scan_source_dir raised err: {} ", res.unwrap_err() );
                     error!("{}", &err); 
-                    println!("{}", line); 
+                    line();
                     return Err(err); 
                 }
             }else {
@@ -1187,10 +1256,10 @@ fn scan_source_dir( //{{{
     } else {
         let err = format!("scan_source_dir: ERROR: cannot read dir: '{}'" , &full_dir); 
         error!("{}", err); 
-        println!("{}", line); 
+        line();
         return Err(err); 
     }
-    println!("{}", line); 
+    line();
     Ok(true)
 }//}}}
 
