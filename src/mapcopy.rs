@@ -20,7 +20,6 @@ use simplelog::*;
 use minidom::Element;
 use regex::*;
 
-
 //#####################################################
 //# part 1. 
 //#   - should of copied ('cp -some-arguments') to the base and specific base_variant dir into the swap dir
@@ -772,7 +771,7 @@ fn map_copy( //{{{
     file_part = file_part.replace('/', "_");
     file_part = file_part.replace('.', "_");
 
-    let file_name = format!("{}/base_TREE_SPECS/spec{}.xml", g.config_dir, file_part);
+    let file_name = format!("{}/tree_definitions/spec{}.xml", g.config_dir, file_part);
 
     println!( "map_copy: XML Spec Treefile: '{}' ",  file_name );
     
